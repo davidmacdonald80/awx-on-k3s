@@ -685,9 +685,14 @@
       delay: "{{ delay_per_retry }}"
       until: awx_task_deployment_status.stdout == "1"
       become: false
+    - name: Check if a reboot is needed
+      shell: "needs-restarting -r"
+      register: reboot_needed2
+      ignore_errors: true
     - name: Reboot the server if needed and wait for it to come back online
       reboot:
         reboot_timeout: "{{ timeout_value }}"
+      when: reboot_needed2.rc == 1
   handlers:
     - name: reload_firewalld
       service:
