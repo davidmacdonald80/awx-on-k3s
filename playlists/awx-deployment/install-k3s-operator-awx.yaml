@@ -1,0 +1,695 @@
+---
+- hosts: all
+  become: true
+  vars_files:
+    - vault.yml
+
+  tasks:
+    - name: Set basic adjustable facts
+      set_fact:
+        # Extracting and setting basic variables from the vault
+        AWX_HOST: "{{ awx_hostV }}" # fqdn of host aka (URL for AWX)
+        dns_server: "{{ dns_serverV }}" # local dns you want kubernetes to forward to
+        node_host4: "{{ node_host4V }}" # IPv4 and hostname
+        node_host6: "{{ node_host6V }}" # IPv6 and hostname
+        repo_upstream_user: "{{ repo_upstream_userV }}" # set to kurokobo
+        repo_my_git_user: "{{ repo_my_git_userV }}" # adjustable if you make your own fork
+        awx_postgres_password: "{{ awx_postgres_passwordV }}" # change for security
+        awx_admin_password: "{{ awx_admin_passwordV }}" # web admin password
+        timeout_value: "{{ timeout_valueV }}" # default set to 20 minutes. adjust as needed
+        delay_per_retry: "{{ delay_per_retryV }}" # x30 / 60 for timeout value in minutes
+        home_dir: "/home/{{ ansible_user }}" # don't need to adjust
+        volume_project: "/data/projects/" # folder for manual storage on host within awx for projects
+        volume_postgres: "/data/postgres-15" # persistant folder for DB
+      become: false
+
+    - name: Calculate divided value and remainder
+      set_fact:
+        divided_value: "{{ timeout_value // delay_per_retry }}"
+        remainder: "{{ timeout_value % delay_per_retry }}"
+      become: false
+
+    - name: Calculate adjusted timeout
+      set_fact:
+        adjusted_timeout: "{{ timeout_value - remainder }}"
+      become: false
+
+    - name: Ensure pip is installed
+      dnf:
+        name: python3-pip
+        state: latest
+
+    - name: Install required Ansible collections
+      ansible.builtin.pip:
+        name: ansible
+      when: ansible_distribution == "CentOS" or ansible_distribution == "RedHat" or ansible_distribution == "AlmaLinux"
+
+    - name: Ensure all packages are up-to-date
+      dnf:
+        name: '*'
+        state: latest
+      register: dnf_update_result
+
+    - name: Make sure yum-utils are installed
+      dnf:
+        name: yum-utils
+        state: present
+
+    - name: Check if a reboot is needed
+      shell: "needs-restarting -r"
+      register: reboot_needed
+      ignore_errors: true
+
+    - name: Reboot the server if needed and wait for it to come back online
+      reboot:
+        reboot_timeout: "{{ timeout_value }}"
+      when: reboot_needed.rc == 1
+
+    - name: Continue playbook execution after reboot
+      meta: clear_host_errors
+
+    - name: Verify removal of buildah
+      dnf:
+        name: buildah
+        state: absent
+    - name: Verify remove of podman
+      dnf:
+        name: podman
+        state: absent
+    - name: Check firewalld is installed
+      dnf:
+        name: firewalld
+        state: present
+    - name: Verify firewalld is running
+      service:
+        name: firewalld
+        state: started
+        enabled: true
+    - name: Create custom firewalld service file for k3s and AWX
+      copy:
+        dest: /etc/firewalld/services/k3s_awx.xml
+        content: |
+          <?xml version="1.0" encoding="utf-8"?>
+          <service>
+            <short>k3s_awx</short>
+            <description>Ports required for k3s and AWX</description>
+            <port protocol="tcp" port="6443"/>
+            <port protocol="tcp" port="80"/>
+            <port protocol="tcp" port="443"/>
+            <port protocol="tcp" port="22"/>
+            <port protocol="tcp" port="2379"/>
+            <port protocol="tcp" port="2380"/>
+            <port protocol="tcp" port="10250"/>
+            <port protocol="tcp" port="10251"/>
+            <port protocol="tcp" port="10252"/>
+            <port protocol="tcp" port="30000-32767"/>
+          </service>
+      notify: reload_firewalld
+    - name: Reload firewalld (if needed or not)
+      service:
+        name: firewalld
+        state: reloaded
+    - name: Apply custome service
+      firewalld:
+        service: k3s_awx
+        zone: public
+        permanent: true
+        state: enabled
+        immediate: yes
+    - name: Add IP ranges to trusted zone for k3s
+      firewalld:
+        source: "{{ item }}"
+        permanent: true
+        state: enabled
+        immediate: yes
+        zone: trusted
+      with_items:
+        - "10.42.0.0/16"
+        - "10.43.0.0/16"
+    - name: Ensure SELinux is installed
+      dnf:
+        name: libselinux
+        state: present
+    - name: Check if SELinux is active
+      command: getenforce
+      register: selinux_status
+      become: false
+    - name: Enable SELinux if not active
+      command: setenforce 0
+      when: selinux_status.stdout == "Disabled"
+    - name: Ensure SELinux is permissive in configuration file
+      lineinfile:
+        path: /etc/selinux/config
+        regexp: '^SELINUX='
+        line: 'SELINUX=permissive'
+        state: present
+      when: selinux_status.stdout == 'Disabled'
+    - name: Reload firewalld (if needed or not)
+      service:
+        name: firewalld
+        state: reloaded
+    - name: Check if nm-cloud-setup.timer exists
+      stat:
+        path: /etc/systemd/system/timers.target.wants/nm-cloud-setup.timer
+      register: nm_cloud_setup_timer
+      become: false
+    - name: Verify nm-cloud-setup.service is disabled
+      systemd:
+        name: nm-cloud-setup.service
+        state: stopped
+        enabled: no
+      when: nm_cloud_setup_timer.stat.exists
+    - name: Verify nm-cloud-setup.timer is disabled
+      systemd:
+        name: nm-cloud-setup.timer
+        state: stopped
+        enabled: no
+      when: nm_cloud_setup_timer.stat.exists
+    - name: Ensure git is installed
+      dnf:
+        name: git
+        state: present
+    - name: Ensure curl is installed
+      dnf:
+        name: curl
+        state: present
+    - name: Fetch latest k3s release from Github
+      uri:
+        url: https://api.github.com/repos/k3s-io/k3s/releases/latest
+        return_content: yes
+      register: latest_release
+      become: false
+    - name: Set k3s version variable
+      set_fact:
+        k3s_version: "{{ latest_release.json.tag_name }}"
+      become: false
+    - name: Check if k3s is already installed (not acurate check)
+      stat:
+        path: /etc/rancher/k3s/k3s.yaml
+      register: rancher_k3s
+      become: false
+    - name: Install k3s
+      shell: curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION={{ k3s_version }} sh -s - --write-kubeconfig-mode 644
+      args:
+        executable: /bin/bash
+      when: not rancher_k3s.stat.exists
+    - name: Create ConfigMap patch for CoreDNS
+      copy:
+        dest: "{{ home_dir }}/coredns-configmap-patch.yaml"
+        content: |
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: coredns
+            namespace: kube-system
+          data:
+            Corefile: |
+              .:53 {
+                  errors
+                  health
+                  ready
+                  kubernetes cluster.local in-addr.arpa ip6.arpa {
+                    pods insecure
+                    fallthrough in-addr.arpa ip6.arpa
+                  }
+                  hosts /etc/coredns/NodeHosts {
+                    ttl 60
+                    reload 15s
+                    fallthrough
+                  }
+                  prometheus :9153
+                  forward . {{ dns_server }}
+                  forward . /etc/resolv.conf
+                  cache 30
+                  loop
+                  reload
+                  loadbalance
+                  import /etc/coredns/custom/*.override
+              }
+              import /etc/coredns/custom/*.server
+            NodeHosts: |
+              {{ node_host4 }}
+              {{ node_host6 }}
+      become: false
+    - name: Check if CoreDNS ConfigMap patch is already applied
+      shell: kubectl -n kube-system get configmap coredns -o jsonpath='{.data.Corefile}' | grep '{{ dns_server }}' | xargs
+      register: check_patch_applied
+      ignore_errors: yes
+      retries: "(( adjusted_timeout ))"
+      delay: "{{ delay_per_retry }}"
+      until: check_patch_applied.rc == 0
+      become: false
+    - name: Apply CoreDNS ConfigMap patch
+      shell: "kubectl apply -f {{ home_dir }}/coredns-configmap-patch.yaml"
+      register: kubectl_apply_result
+      when: check_patch_applied.rc != 0
+      retries: "{{ adjusted_timeout }}"
+      delay: "{{ delay_per_retry }}"
+      until: kubectl_apply_result.rc == 0
+      become: false
+    - name: Check if CoreDNS ConfigMap patch was applied successfully
+      fail:
+        msg: "Failed to apply CoreDNS ConfigMap patch"
+      when: kubectl_apply_result.rc is defined and kubectl_apply_result.rc != 0 and check_patch_applied.rc != 0
+      become: false
+    - name: Create Job definition to apply CoreDNS ConfigMap patch
+      copy:
+        dest: "{{ home_dir }}/update-coredns-config-job.yaml"
+        content: |
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: update-coredns-config
+            namespace: kube-system
+          spec:
+            template:
+              spec:
+                containers:
+                - name: update-coredns-config
+                  image: bitnami/kubectl:latest
+                  command: ['sh', '-c', 'kubectl apply -f /config/coredns-configmap-patch.yaml']
+                  volumeMounts:
+                  - name: config-volume
+                    mountPath: /config
+                restartPolicy: OnFailure
+                volumes:
+                - name: config-volume
+                  configMap:
+                    name: coredns-configmap-patch
+      become: false
+    - name: Create Job to apply CoreDNS ConfigMap patch
+      shell: kubectl apply -f "{{ home_dir }}/update-coredns-config-job.yaml"
+      register: job_apply_result
+      when: check_patch_applied.rc != 0
+      retries: "{{ adjusted_timeout }}"
+      delay: "{{ delay_per_retry }}"
+      until: job_apply_result.rc == 0
+      become: false
+    - name: Check if Job was created successfully
+      fail:
+        msg: "Failed to create Job to apply CoreDNS ConfigMap patch"
+      when: job_apply_result.rc is defined and job_apply_result.rc != 0 and check_patch_applied.rc != 0
+      become: false
+    - name: Wait for Job to complete
+      shell: kubectl -n kube-system wait --for=condition=complete --timeout={{ timeout_value }}s job/update-coredns-config
+      register: job_wait_result
+      when: check_patch_applied.rc != 0
+      retries: "{{ adjusted_timeout }}"
+      delay: "{{ delay_per_retry }}"
+      until: job_wait_result.rc == 0
+      become: false
+    - name: Check Job result
+      fail:
+        msg: "Job to update CoreDNS config failed"
+      when: job_wait_result.rc is defined and job_wait_result.rc != 0 and check_patch_applied.rc != 0
+      become: false
+    - name: Create .kube directory if needed
+      file:
+        path: "{{ home_dir }}/.kube"
+        state: directory
+        mode: '0755'
+      become: false
+    - name: Get checksum of source k3s.yaml
+      stat:
+        path: /etc/rancher/k3s/k3s.yaml
+        get_checksum: yes
+      register: k3s_yaml_file
+    - name: Get checksum of dest config file
+      stat:
+        path: "{{ home_dir }}/.kube/config"
+        get_checksum: yes
+      register: config_dest_file
+      ignore_errors: true
+      become: false
+    - name: Copy k3s.yaml to .kube/config
+      copy:
+        src: /etc/rancher/k3s/k3s.yaml
+        dest: "{{ home_dir }}/.kube/config"
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0644'
+        remote_src: true
+      when: k3s_yaml_file.stat.exists and 
+         (config_dest_file.stat.exists == false or k3s_yaml_file.stat.checksum != config_dest_file.stat.checksum)
+    - name: Ensure kubectl completion bash is added to /etc/bashrc
+      lineinfile:
+        path: /etc/bashrc
+        line: "source <(kubectl completion bash)"
+        state: present
+        create: yes
+    - name: Ensure KUBECONFIG is set in /etc/bashrc
+      lineinfile:
+        path: /etc/bashrc
+        line: "export KUBECONFIG=~/.kube/config"
+        state: present
+        create: yes
+    - name: Source /etc/bashrc to apply changes
+      shell: "source /etc/bashrc"
+    - name: Fetch latest commit hash from upstream repository
+      uri:
+        url: "https://api.github.com/repos/{{ repo_upstream_user }}/awx-on-k3s/commits/main"
+        return_content: yes
+      register: upstream_commit
+      become: false
+    - name: Fetch latest commit hash from forked repository
+      uri:
+        url: "https://api.github.com/repos/{{ repo_my_git_user }}/awx-on-k3s/commits/main"
+        return_content: yes
+      register: fork_commit
+      become: false
+    - name: Ensure fork is up to date
+      set_fact:
+        fork_up_to_date: "{{ upstream_commit.json.sha == fork_commit.json.sha }}"
+      become: false
+    - name: Sync fork with upstream if not up to date
+      shell: |
+        git clone https://github.com/{{ repo_my_git_user }}/awx-on-k3s.git {{ home_dir }}/awx-on-k3s-tmp
+        cd {{ home_dir }}/awx-on-k3s-tmp
+        git remote add upstream https://github.com/{{ repo_upstream_user }}/awx-on-k3s.git || true
+        git fetch upstream
+        git checkout main
+        git merge upstream/main
+        git push origin main
+      when: not fork_up_to_date
+      args:
+        executable: /bin/bash
+      become: false
+    - name: Clone or update repository in target directory
+      shell: |
+        if [ ! -d "{{ home_dir }}/awx-on-k3s/.git" ]; then
+          cd {{ home_dir }}
+          git clone https://github.com/{{ repo_my_git_user }}/awx-on-k3s.git
+        else
+          cd {{ home_dir }}/awx-on-k3s
+          git pull origin main
+        fi
+      args:
+        executable: /bin/bash
+      become: false
+    - name: Remove temporary directory if it exists
+      file:
+        path: "{{ home_dir }}/awx-on-k3s-tmp"
+        state: absent
+      become: false
+    - name: Fetch latest tag from fork
+      uri:
+        url: "https://api.github.com/repos/{{ repo_my_git_user }}/awx-on-k3s/tags"
+        return_content: yes
+      register: fork_tags
+      become: false
+    - name: Set latest tag version from fork
+      set_fact:
+        fork_latest_version: "{{ fork_tags.json[0].name }}"
+      become: false
+    - name: Fetch latest release from ansible/awx-operator
+      uri:
+        url: https://api.github.com/repos/ansible/awx-operator/releases/latest
+        return_content: yes
+      register: awx_operator_release
+      become: false
+    - name: Set latest release version from awx-operator
+      set_fact:
+        awx_operator_latest_version: "{{ awx_operator_release.json.tag_name }}"
+      become: false
+    - name: Parse versions to integers for comparison
+      set_fact:
+        fork_latest_version_parts: "{{ fork_latest_version.split('.') | map('int') | list }}"
+        awx_operator_latest_version_parts: "{{ awx_operator_latest_version.split('.') | map('int') | list }}"
+      become: false
+    - name: Compare versions and set the latest version
+      set_fact:
+        latest_version: >-
+          {% if fork_latest_version_parts > awx_operator_latest_version_parts %}
+            {{ fork_latest_version }}
+          {% else %}
+            {{ awx_operator_latest_version }}
+          {% endif %}
+      become: false
+    - name: Ensure the directory exists
+      file:
+        path: "{{ home_dir}}/awx-on-k3s/operator"
+        state: directory
+        mode: '0755'
+    - name: Check if kustomization.yaml exists
+      stat:
+        path: "{{ home_dir }}/awx-on-k3s/operator/kustomization.yaml"
+      register: kustomization_file
+      become: false
+    - name: Fail if kustomization.yaml does not exist
+      fail:
+        msg: "kustomization.yaml file does not exist at the specified path."
+      when: not kustomization_file.stat.exists
+      become: false
+    - name: Created extract_version.sh script
+      copy:
+        content: |
+          #!/bin/bash
+          file_content=$(cat "$1")
+          echo "File content:"
+          echo "$file_content"
+          ref_version=$(echo "$file_content" | grep 'ref=' | sed 's/.*ref=[[:space:]]*\(.*\)/\1/' | tr -d ' ')
+          new_tag=$(echo "$file_content" | grep 'newTag:' | sed 's/.*newTag:[[:space:]]*\(.*\)/\1/' | tr -d ' ')
+          echo "Extracted ref_version: $ref_version"
+          echo "Extracted new_tag: $new_tag"
+          echo "ref_version=$ref_version"
+          echo "new_tag=$new_tag"
+        dest: "{{ home_dir }}/extract_versions.sh"
+        mode: '0777'
+      become: false
+    - name: Run extract_version
+      shell: "/bin/bash {{ home_dir }}/extract_versions.sh {{ home_dir }}/awx-on-k3s/operator/kustomization.yaml"
+      register: script_output
+      become: false
+    - name: Set versions as facts
+      set_fact:
+        kustomization_version: "{{ script_output.stdout_lines | select('search', '^ref_version=') | list | first | regex_replace('^ref_version=', '') }}"
+        kustomization_image_tag: "{{ script_output.stdout_lines | select('search', '^new_tag=') | list | first | regex_replace('^new_tag=', '') }}"
+      become: false
+    - name: Ensure the local repository is updated with the latest changes from upstream
+      shell: |
+        git remote add upstream https://github.com/{{ repo_upstream_user }}/awx-on-k3s.git || true
+      args:
+        chdir: "{{ home_dir }}/awx-on-k3s"
+        executable: /bin/bash
+      become: false
+    - name: Fetch latest commit hash from upstream repository
+      shell: |
+        git fetch upstream
+        git log upstream/main -1 --format=%H
+      args:
+        chdir: "{{ home_dir }}/awx-on-k3s"
+        executable: /bin/bash
+      register: upstream_commit
+      ignore_errors: yes
+      become: false
+    - name: Fetch latest commit hash from local main branch
+      shell: |
+        git log main -1 --format=%H
+      args:
+        chdir: "{{ home_dir }}/awx-on-k3s"
+        executable: /bin/bash
+      register: local_commit
+      ignore_errors: yes
+      become: false
+    - name: Check if local repository is up to date with upstream
+      set_fact:
+        is_up_to_date: "{{ upstream_commit.stdout.strip() == local_commit.stdout.strip() }}"
+      become: false
+    - name: Sync local repository with upstream if not up to date
+      shell: |
+        git fetch upstream
+        git checkout main
+        git merge upstream/main
+      args:
+        chdir: "{{ home_dir }}/awx-on-k3s"
+        executable: /bin/bash
+      when: not is_up_to_date
+      become: false
+    - name: Push the changes to your GitHub fork
+      shell: |
+        git push origin main
+      args:
+        chdir: "{{ home_dir }}/awx-on-k3s"
+        executable: /bin/bash
+      when: not is_up_to_date
+      become: false
+    - name: Create kustomization.yaml for AWX operator
+      copy:
+        dest: "{{ home_dir }}/awx-on-k3s/operator/kustomization.yaml"
+        content: |
+          ---
+          apiVersion: kustomize.config.k8s.io/v1beta1
+          kind: Kustomization
+          namespace: awx
+
+          generatorOptions:
+            disableNameSuffixHash: true
+
+          secretGenerator:
+            - name: redhat-operators-pull-secret
+              literals:
+                - operator=awx
+
+          resources:
+            - github.com/ansible/awx-operator/config/default?ref={{ latest_version.strip() }}
+
+          images:
+            - name: quay.io/ansible/awx-operator
+              newTag: {{ latest_version.strip() }}
+      become: false
+    - name: Check current AWX operator version
+      shell: kubectl -n awx get deployment awx-operator -o jsonpath="{..image}" | grep -o 'quay.io/ansible/awx-operator:.*' | awk -F':' '{print $2}'
+      register: current_awx_operator_version
+      ignore_errors: yes
+      become: false
+    - name: Apply kustomization to deploy AWX operator
+      shell: "kubectl apply -k {{ home_dir }}/awx-on-k3s/operator/"
+      args:
+        chdir: "{{ home_dir }}/awx-on-k3s/operator/"
+      register: kustomize_apply_result
+      when: current_awx_operator_version.stdout != kustomization_image_tag
+      retries: "{{ adjusted_timeout }}"
+      delay: "{{ delay_per_retry }}"
+      until: kustomize_apply_result.rc == 0
+      become: false
+    - name: Wait for AWX operator deployment to be available
+      shell: "kubectl get deployment awx-operator-controller-manager -n awx -o jsonpath='{.status.availableReplicas}'"
+      register: awx_operator_deployment_status
+      retries: "{{ adjusted_timeout }}"
+      delay: "{{ delay_per_retry }}"
+      until: awx_operator_deployment_status.stdout == "1"
+      become: false
+    - name: Check if AWX operator deployment was successful
+      fail:
+        msg: "Failed to deploy AWX operator"
+      when: kustomize_apply_result is defined and kustomize_apply_result.rc != 0
+      become: false
+    - name: Create TLS Secret
+      shell: "openssl req -x509 -nodes -days 36500 -newkey rsa:4096 -out {{ home_dir }}/awx-on-k3s/base/tls.crt -keyout {{ home_dir }}/awx-on-k3s/base/tls.key -subj '/CN={{ AWX_HOST }}/O={{ AWX_HOST }}' -addext 'subjectAltName = DNS:{{ AWX_HOST }}'"
+      args:
+        creates: "{{ home_dir }}/awx-on-k3s/base/tls.crt"
+      become: false
+    - name: Create kustomization.yaml for AWX base
+      copy:
+        dest: "{{ home_dir }}/awx-on-k3s/base/kustomization.yaml"
+        content: |
+          ---
+          apiVersion: kustomize.config.k8s.io/v1beta1
+          kind: Kustomization
+          namespace: awx
+
+          generatorOptions:
+            disableNameSuffixHash: true
+
+          secretGenerator:
+            - name: awx-secret-tls
+              type: kubernetes.io/tls
+              files:
+                - tls.crt
+                - tls.key
+
+            - name: awx-postgres-configuration
+              type: Opaque
+              literals:
+                - host=awx-postgres-15
+                - port=5432
+                - database=awx
+                - username=awx
+                - password={{ awx_postgres_password }}
+                - type=managed
+
+            - name: awx-admin-password
+              type: Opaque
+              literals:
+                - password={{ awx_admin_password }}
+
+          resources:
+            - pv.yaml
+            - pvc.yaml
+            - awx.yaml
+      become: false
+    - name: Create AWX Custom Resource (CR)
+      copy:
+        dest: "{{ home_dir }}/awx-on-k3s/base/awx.yaml"
+        content: |
+          ---
+          apiVersion: awx.ansible.com/v1beta1
+          kind: AWX
+          metadata:
+            name: awx
+          spec:
+            admin_user: admin
+            admin_password_secret: awx-admin-password
+
+            ingress_type: ingress
+            ingress_hosts:
+              - hostname: {{ AWX_HOST }}
+                tls_secret: awx-secret-tls
+
+            postgres_configuration_secret: awx-postgres-configuration
+
+            postgres_data_volume_init: true
+            postgres_storage_class: awx-postgres-volume
+            postgres_storage_requirements:
+              requests:
+                storage: 8Gi
+
+            projects_persistence: true
+            projects_existing_claim: awx-projects-claim
+
+            web_replicas: 1
+            task_replicas: 1
+
+            web_resource_requirements: {}
+            task_resource_requirements: {}
+            ee_resource_requirements: {}
+            init_container_resource_requirements: {}
+            postgres_resource_requirements: {}
+            redis_resource_requirements: {}
+            rsyslog_resource_requirements: {}
+
+            # Uncomment to reveal "censored" logs
+            # no_log: false
+      become: false
+    - name: Clean up files
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ home_dir }}/update-coredns-config-job.yaml"
+        - "{{ home_dir }}/coredns-configmap-patch.yaml"
+        - "{{ home_dir }}/extract_versions.sh"
+      become: false
+    - name: Create persistant storage folder
+      file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: "{{ item.uid }}"
+        group: "{{ item.gid }}"
+        mode: "{{ item.mode }}"
+      loop:
+        - { path: "{{ volume_project }}", uid: "1000", gid: "0", mode: "0755" }
+        - { path: "{{ volume_postgres }}", uid: "0", gid: "0", mode: "0755" }
+        - { path: "{{ volume_postgres }}/data", uid: "26", gid: "0", mode: "0700" }
+    - name: Deploy AWX
+      shell: kubectl apply -k "{{ home_dir }}/awx-on-k3s/base/"
+      register: deploy_awx_result
+      retries: "{{ adjusted_timeout }}"
+      delay: "{{ delay_per_retry }}"
+      until: deploy_awx_result.rc == 0
+      become: false
+    - name: Wait for AWX task deployment to be ready, could take 5+ minutes. This only monitors for 10 min.
+      shell: "kubectl get deployment awx-task -n awx -o jsonpath='{.status.readyReplicas}'"
+      register: awx_task_deployment_status
+      retries: "{{ adjusted_timeout }}"
+      delay: "{{ delay_per_retry }}"
+      until: awx_task_deployment_status.stdout == "1"
+      become: false
+    - name: Reboot the server if needed and wait for it to come back online
+      reboot:
+        reboot_timeout: "{{ timeout_value }}"
+  handlers:
+    - name: reload_firewalld
+      service:
+        name: firewalld
+        state: reloaded
