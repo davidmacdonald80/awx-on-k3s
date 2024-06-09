@@ -15,8 +15,8 @@ The playlist will check for these that it can but honestly how can you run it wi
 
 Ensure you have a `vault.yml` file containing the following encrypted variables:
 A password is required when it asks.
-Create the vault in the same folder with 'ansible-vault create vault.yml'
-You can edit it with 'ansible-vault edit vault.yml'
+Create the vault in the same folder with ```ansible-vault create vault.yml```
+You can edit it with ```ansible-vault edit vault.yml```
 
 ```yaml
 become_passwordV: "your_sudo_password"
@@ -31,6 +31,7 @@ timeout_valueV: 600  # 10 minutes in seconds
 delay_per_retryV: 20 # 20 seconds between retry
 repo_my_git_userV: "yourusername" # your git username assuming you make your own fork
 repo_upstream_userV: "kurokobo" # The person that deserves the credit, I just built the playlist.
+```
 
 ## Notes
 
@@ -38,7 +39,7 @@ It will verify and enable SELinux if disabled, update firewalld rules needed, an
 The deployment will be a basic install that can see computers on your local network with the dns forward.
 I'll eventually break this down into roles to be managed better.
 
-Run the playbook with 'ansible-playlist -i inventory.yaml install-k3s-operator-awx.yaml --ask-vault-pass'
+Run the playbook with ```ansible-playlist -i inventory.yaml install-k3s-operator-awx.yaml --ask-vault-pass```
 
 ### Explanation:
 - **Prerequisites**: Lists the requirements for running the playbook.
