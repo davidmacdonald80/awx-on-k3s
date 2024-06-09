@@ -14,7 +14,6 @@ The playlist will check for these that it can but honestly how can you run it wi
 ## Vault Variables
 
 Ensure you have a `vault.yml` file containing the following encrypted variables:
-```markdown
 A password is required when it asks.
 Create the vault in the same folder with 'ansible-vault create vault.yml'
 You can edit it with 'ansible-vault edit vault.yml'
@@ -38,7 +37,7 @@ repo_upstream_userV: "kurokobo" # The person that deserves the credit, I just bu
 It will verify and enable SELinux if disabled, update firewalld rules needed, and take care of everything for you.
 The deployment will be a basic install that can see computers on your local network with the dns forward.
 I'll eventually break this down into roles to be managed better.
-```markdown
+
 Run the playbook with 'ansible-playlist -i inventory.yaml install-k3s-operator-awx.yaml --ask-vault-pass'
 
 ### Explanation:
