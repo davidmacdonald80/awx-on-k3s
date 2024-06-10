@@ -25,6 +25,7 @@ awx_hostV: "awx.yourdomain.com" # FQDN of your awx host that the self-signed cer
 dns_serverV: "8.8.8.8" # set your local dns that can resolve your computer names
 node_host4V: "192.168.1.10 yourhostname" # awx host ipv4 address
 node_host6V: "fe80::1 yourhostname" # ipv6 host address if used - i haven't tested leaving blank yet
+domain_searchV: "domain.com" # domain name to append to dns search
 awx_postgres_passwordV: "your_postgres_password" # custom password for postres
 awx_admin_passwordV: "your_admin_password" # set your admin password for the web login
 timeout_valueV: 600  # 10 minutes in seconds

@@ -18,6 +18,7 @@
         awx_admin_password: "{{ awx_admin_passwordV }}" # web admin password
         timeout_value: "{{ timeout_valueV }}" # default set to 20 minutes. adjust as needed
         delay_per_retry: "{{ delay_per_retryV }}" # x30 / 60 for timeout value in minutes
+        domain_search: "{{ domain_searchV }}"
         home_dir: "/home/{{ ansible_user }}" # don't need to adjust
         volume_project: "/data/projects/" # folder for manual storage on host within awx for projects
         volume_postgres: "/data/postgres-15" # persistant folder for DB
@@ -193,6 +194,48 @@
       args:
         executable: /bin/bash
       when: not rancher_k3s.stat.exists
+    - name: Create .kube directory if needed
+      file:
+        path: "{{ home_dir }}/.kube"
+        state: directory
+        mode: '0755'
+      become: false
+    - name: Get checksum of source k3s.yaml
+      stat:
+        path: /etc/rancher/k3s/k3s.yaml
+        get_checksum: yes
+      register: k3s_yaml_file
+    - name: Get checksum of dest config file
+      stat:
+        path: "{{ home_dir }}/.kube/config"
+        get_checksum: yes
+      register: config_dest_file
+      ignore_errors: true
+      become: false
+    - name: Copy k3s.yaml to .kube/config
+      copy:
+        src: /etc/rancher/k3s/k3s.yaml
+        dest: "{{ home_dir }}/.kube/config"
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0644'
+        remote_src: true
+      when: k3s_yaml_file.stat.exists and 
+         (config_dest_file.stat.exists == false or k3s_yaml_file.stat.checksum != config_dest_file.stat.checksum)
+    - name: Ensure kubectl completion bash is added to /etc/bashrc
+      lineinfile:
+        path: /etc/bashrc
+        line: "source <(kubectl completion bash)"
+        state: present
+        create: yes
+    - name: Ensure KUBECONFIG is set in /etc/bashrc
+      lineinfile:
+        path: /etc/bashrc
+        line: "export KUBECONFIG=~/.kube/config"
+        state: present
+        create: yes
+    - name: Source /etc/bashrc to apply changes
+      shell: "source /etc/bashrc"
     - name: Create ConfigMap patch for CoreDNS
       copy:
         dest: "{{ home_dir }}/coredns-configmap-patch.yaml"
@@ -303,48 +346,6 @@
         msg: "Job to update CoreDNS config failed"
       when: job_wait_result.rc is defined and job_wait_result.rc != 0 and check_patch_applied.rc != 0
       become: false
-    - name: Create .kube directory if needed
-      file:
-        path: "{{ home_dir }}/.kube"
-        state: directory
-        mode: '0755'
-      become: false
-    - name: Get checksum of source k3s.yaml
-      stat:
-        path: /etc/rancher/k3s/k3s.yaml
-        get_checksum: yes
-      register: k3s_yaml_file
-    - name: Get checksum of dest config file
-      stat:
-        path: "{{ home_dir }}/.kube/config"
-        get_checksum: yes
-      register: config_dest_file
-      ignore_errors: true
-      become: false
-    - name: Copy k3s.yaml to .kube/config
-      copy:
-        src: /etc/rancher/k3s/k3s.yaml
-        dest: "{{ home_dir }}/.kube/config"
-        owner: "{{ ansible_user }}"
-        group: "{{ ansible_user }}"
-        mode: '0644'
-        remote_src: true
-      when: k3s_yaml_file.stat.exists and 
-         (config_dest_file.stat.exists == false or k3s_yaml_file.stat.checksum != config_dest_file.stat.checksum)
-    - name: Ensure kubectl completion bash is added to /etc/bashrc
-      lineinfile:
-        path: /etc/bashrc
-        line: "source <(kubectl completion bash)"
-        state: present
-        create: yes
-    - name: Ensure KUBECONFIG is set in /etc/bashrc
-      lineinfile:
-        path: /etc/bashrc
-        line: "export KUBECONFIG=~/.kube/config"
-        state: present
-        create: yes
-    - name: Source /etc/bashrc to apply changes
-      shell: "source /etc/bashrc"
     - name: Fetch latest commit hash from upstream repository
       uri:
         url: "https://api.github.com/repos/{{ repo_upstream_user }}/awx-on-k3s/commits/main"
@@ -550,6 +551,88 @@
       args:
         creates: "{{ home_dir }}/awx-on-k3s/base/tls.crt"
       become: false
+
+    - name: Create ConfigMap for custom resolv.conf
+      copy:
+        dest: "{{ home_dir }}/awx-on-k3s/base/custom-resolv-conf.yaml"
+        content: |
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: custom-resolv-conf
+            namespace: awx
+          data:
+            resolv.conf: |
+              search {{ domain_search }}
+      become: false
+
+    - name: Apply configmap for custom resolv.conf
+      shell: kubectl apply -f "{{ home_dir }}/awx-on-k3s/base/custom-resolv-conf.yaml"
+      register: custom_resolv_conf_apply_result
+      become: false
+
+    - name: Debug custom resolv.conf apply result
+      debug:
+        var: custom_resolv_conf_apply_result
+
+    - name: Create AWX Custom Resource (CR)
+      copy:
+        dest: "{{ home_dir }}/awx-on-k3s/base/awx.yaml"
+        content: |
+          ---
+          apiVersion: awx.ansible.com/v1beta1
+          kind: AWX
+          metadata:
+            name: awx
+            namespace: awx
+          spec:
+            admin_user: admin
+            admin_password_secret: awx-admin-password
+
+            ingress_type: ingress
+            ingress_hosts:
+              - hostname: {{ AWX_HOST }}
+                tls_secret: awx-secret-tls
+
+            postgres_configuration_secret: awx-postgres-configuration
+
+            postgres_data_volume_init: true
+            postgres_storage_class: awx-postgres-volume
+            postgres_storage_requirements:
+              requests:
+                storage: 8Gi
+
+            projects_persistence: true
+            projects_existing_claim: awx-projects-claim
+
+            web_replicas: 1
+            task_replicas: 1
+
+            web_resource_requirements: {}
+            task_resource_requirements: {}
+            ee_resource_requirements: {}
+            init_container_resource_requirements: {}
+            postgres_resource_requirements: {}
+            redis_resource_requirements: {}
+            rsyslog_resource_requirements: {}
+
+            volumes:
+              - name: custom-resolv-conf
+                configMap:
+                  name: custom-resolv-conf
+
+            template:
+              spec:
+                containers:
+                  - name: awx-web
+                    volumeMounts:
+                      - name: custom-resolv-conf
+                        mountPath: /etc/resolv.conf
+                        subPath: resolv.conf
+
+            # Uncomment to reveal "censored" logs
+            # no_log: false
+      become: false
     - name: Create kustomization.yaml for AWX base
       copy:
         dest: "{{ home_dir }}/awx-on-k3s/base/kustomization.yaml"
@@ -588,49 +671,7 @@
             - pv.yaml
             - pvc.yaml
             - awx.yaml
-      become: false
-    - name: Create AWX Custom Resource (CR)
-      copy:
-        dest: "{{ home_dir }}/awx-on-k3s/base/awx.yaml"
-        content: |
-          ---
-          apiVersion: awx.ansible.com/v1beta1
-          kind: AWX
-          metadata:
-            name: awx
-          spec:
-            admin_user: admin
-            admin_password_secret: awx-admin-password
-
-            ingress_type: ingress
-            ingress_hosts:
-              - hostname: {{ AWX_HOST }}
-                tls_secret: awx-secret-tls
-
-            postgres_configuration_secret: awx-postgres-configuration
-
-            postgres_data_volume_init: true
-            postgres_storage_class: awx-postgres-volume
-            postgres_storage_requirements:
-              requests:
-                storage: 8Gi
-
-            projects_persistence: true
-            projects_existing_claim: awx-projects-claim
-
-            web_replicas: 1
-            task_replicas: 1
-
-            web_resource_requirements: {}
-            task_resource_requirements: {}
-            ee_resource_requirements: {}
-            init_container_resource_requirements: {}
-            postgres_resource_requirements: {}
-            redis_resource_requirements: {}
-            rsyslog_resource_requirements: {}
-
-            # Uncomment to reveal "censored" logs
-            # no_log: false
+            - custom-resolv-conf.yaml
       become: false
     - name: Clean up files
       file:
@@ -659,6 +700,9 @@
       delay: "{{ delay_per_retry }}"
       until: deploy_awx_result.rc == 0
       become: false
+    - name: Debug apply base
+      debug:
+        msg: deploy_awx_result
     - name: Wait for AWX task deployment to be ready, could take 5+ minutes. This only monitors for 10 min.
       shell: "kubectl get deployment awx-task -n awx -o jsonpath='{.status.readyReplicas}'"
       register: awx_task_deployment_status
