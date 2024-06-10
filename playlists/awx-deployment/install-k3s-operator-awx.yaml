@@ -347,6 +347,23 @@
       when: job_wait_result.rc is defined and job_wait_result.rc != 0 and check_patch_applied.rc != 0
       become: false
     
+    - name: Clone or update repository in target directory
+      shell: |
+        if [ ! -d "{{ home_dir }}/awx-on-k3s/.git" ]; then
+          cd {{ home_dir }}
+          git clone https://github.com/{{ repo_my_git_user }}/awx-on-k3s.git
+        else
+          cd {{ home_dir }}/awx-on-k3s
+          git pull origin main
+        fi
+      args:
+        executable: /bin/bash
+      become: false
+    - name: Remove temporary directory if it exists
+      file:
+        path: "{{ home_dir }}/awx-on-k3s-tmp"
+        state: absent
+      become: false
     - name: Fetch latest tag from fork
       uri:
         url: "https://api.github.com/repos/{{ repo_my_git_user }}/awx-on-k3s/tags"
