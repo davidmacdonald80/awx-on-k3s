@@ -231,21 +231,21 @@
               {{ node_host4 }}
               {{ node_host6 }}
       become: false
+    - name: Apply CoreDNS ConfigMap patch
+      shell: "kubectl apply -f {{ home_dir }}/coredns-configmap-patch.yaml"
+      register: kubectl_apply_result
+      become: false
+
+    - name: Rollout restart coredns
+      shell: kubectl -n kube-system rollout restart deployment coredns
+      become: false
     - name: Check if CoreDNS ConfigMap patch is already applied
-      shell: kubectl -n kube-system get configmap coredns -o jsonpath='{.data.Corefile}' | grep '{{ dns_server }}' | xargs
+      shell: kubectl -n kube-system get configmap coredns -o jsonpath='{.data.Corefile}' | grep '{{ dns_server }}'
       register: check_patch_applied
       ignore_errors: yes
       retries: "{{ adjusted_timeout }}"
       delay: "{{ delay_per_retry }}"
       until: check_patch_applied.rc == 0
-      become: false
-    - name: Apply CoreDNS ConfigMap patch
-      shell: "kubectl apply -f {{ home_dir }}/coredns-configmap-patch.yaml"
-      register: kubectl_apply_result
-      when: check_patch_applied.rc != 0
-      retries: "{{ adjusted_timeout }}"
-      delay: "{{ delay_per_retry }}"
-      until: kubectl_apply_result.rc == 0
       become: false
     - name: Check if CoreDNS ConfigMap patch was applied successfully
       fail:
