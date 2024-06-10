@@ -532,20 +532,6 @@
             redis_resource_requirements: {}
             rsyslog_resource_requirements: {}
 
-            volumes:
-              - name: custom-resolv-conf
-                configMap:
-                  name: custom-resolv-conf
-
-            template:
-              spec:
-                containers:
-                  - name: awx-web
-                    volumeMounts:
-                      - name: custom-resolv-conf
-                        mountPath: /etc/resolv.conf
-                        subPath: resolv.conf
-
             # Uncomment to reveal "censored" logs
             # no_log: false
       become: false
@@ -587,7 +573,6 @@
             - pv.yaml
             - pvc.yaml
             - awx.yaml
-            - custom-resolv-conf.yaml
       become: false
     - name: Clean up files
       file:
