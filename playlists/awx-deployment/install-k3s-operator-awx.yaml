@@ -23,64 +23,43 @@
         volume_project: "/data/projects/" # folder for manual storage on host within awx for projects
         volume_postgres: "/data/postgres-15" # persistant folder for DB
       become: false
-
     - name: Calculate divided value and remainder
       set_fact:
         divided_value: "{{ timeout_value | int // delay_per_retry | int }}"
         remainder: "{{ timeout_value | int % delay_per_retry | int }}"
       become: false
-
     - name: Calculate adjusted timeout
       set_fact:
         adjusted_timeout: "{{ timeout_value | int - remainder | int }}"
       become: false
-
-    - name: Ensure pip is installed
+    - name: Ensure required apps are installed or removed and updated
       dnf:
-        name: python3-pip
-        state: latest
-
+        name: "{{ item.name }}"
+        state: "{{ item.state }}"
+      loop:
+        - { name: "git", state: "present" }
+        - { name: "curl", state: "present" }
+        - { name: "python3-pip", state: "present" }
+        - { name: "yum-utils", state: "present" }
+        - { name: "firewalld", state: "present" }
+        - { name: "libselinux", state: "present" }
+        - { name: "podman", state: "absent" }
+        - { name: "buildah", state: "absent" }
+        - { name: "*", state: "latest"}
     - name: Install required Ansible collections
       ansible.builtin.pip:
         name: ansible
       when: ansible_distribution == "CentOS" or ansible_distribution == "RedHat" or ansible_distribution == "AlmaLinux"
-
-    - name: Ensure all packages are up-to-date
-      dnf:
-        name: '*'
-        state: latest
-      register: dnf_update_result
-
-    - name: Make sure yum-utils are installed
-      dnf:
-        name: yum-utils
-        state: present
-
     - name: Check if a reboot is needed
       shell: "needs-restarting -r"
       register: reboot_needed
       ignore_errors: true
-
     - name: Reboot the server if needed and wait for it to come back online
       reboot:
         reboot_timeout: "{{ timeout_value }}"
       when: reboot_needed.rc == 1
-
     - name: Continue playbook execution after reboot
       meta: clear_host_errors
-
-    - name: Verify removal of buildah
-      dnf:
-        name: buildah
-        state: absent
-    - name: Verify remove of podman
-      dnf:
-        name: podman
-        state: absent
-    - name: Check firewalld is installed
-      dnf:
-        name: firewalld
-        state: present
     - name: Verify firewalld is running
       service:
         name: firewalld
@@ -110,7 +89,7 @@
       service:
         name: firewalld
         state: reloaded
-    - name: Apply custome service
+    - name: Apply custom service
       firewalld:
         service: k3s_awx
         zone: public
@@ -127,10 +106,6 @@
       with_items:
         - "10.42.0.0/16"
         - "10.43.0.0/16"
-    - name: Ensure SELinux is installed
-      dnf:
-        name: libselinux
-        state: present
     - name: Check if SELinux is active
       command: getenforce
       register: selinux_status
@@ -166,14 +141,6 @@
         state: stopped
         enabled: no
       when: nm_cloud_setup_timer.stat.exists
-    - name: Ensure git is installed
-      dnf:
-        name: git
-        state: present
-    - name: Ensure curl is installed
-      dnf:
-        name: curl
-        state: present
     - name: Fetch latest k3s release from Github
       uri:
         url: https://api.github.com/repos/k3s-io/k3s/releases/latest
@@ -346,16 +313,14 @@
         msg: "Job to update CoreDNS config failed"
       when: job_wait_result.rc is defined and job_wait_result.rc != 0 and check_patch_applied.rc != 0
       become: false
-    
-    - name: Clone or update repository in target directory
+    - name: make sure awx-on-k3s is absent
+      file:
+        path: "{{ home_dir }}/awx-on-k3s"
+        state: absent
+    - name: Clone repository in target directory
       shell: |
-        if [ ! -d "{{ home_dir }}/awx-on-k3s/.git" ]; then
-          cd {{ home_dir }}
-          git clone https://github.com/{{ repo_my_git_user }}/awx-on-k3s.git
-        else
-          cd {{ home_dir }}/awx-on-k3s
-          git pull origin main
-        fi
+        cd {{ home_dir }}
+        git clone https://github.com/{{ repo_my_git_user }}/awx-on-k3s.git
       args:
         executable: /bin/bash
       become: false
