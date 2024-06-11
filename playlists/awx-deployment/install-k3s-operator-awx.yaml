@@ -12,13 +12,11 @@
         dns_server: "{{ dns_serverV }}" # local dns you want kubernetes to forward to
         node_host4: "{{ node_host4V }}" # IPv4 and hostname
         node_host6: "{{ node_host6V }}" # IPv6 and hostname
-        repo_upstream_user: "{{ repo_upstream_userV }}" # set to kurokobo
         repo_my_git_user: "{{ repo_my_git_userV }}" # adjustable if you make your own fork
         awx_postgres_password: "{{ awx_postgres_passwordV }}" # change for security
         awx_admin_password: "{{ awx_admin_passwordV }}" # web admin password
         timeout_value: "{{ timeout_valueV }}" # default set to 20 minutes. adjust as needed
         delay_per_retry: "{{ delay_per_retryV }}" # x30 / 60 for timeout value in minutes
-        domain_search: "{{ domain_searchV }}"
         home_dir: "/home/{{ ansible_user }}" # don't need to adjust
         volume_project: "/data/projects/" # folder for manual storage on host within awx for projects
         volume_postgres: "/data/postgres-15" # persistant folder for DB
@@ -568,10 +566,6 @@
       retries: "{{ adjusted_timeout }}"
       delay: "{{ delay_per_retry }}"
       until: deploy_awx_result.rc == 0
-      become: false
-    - name: Debug apply base
-      debug:
-        msg: deploy_awx_result
       become: false
     - name: Wait for AWX task deployment to be ready, could take 5+ minutes. This only monitors for 10 min.
       shell: "kubectl get deployment awx-task -n awx -o jsonpath='{.status.readyReplicas}'"

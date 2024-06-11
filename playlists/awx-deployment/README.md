@@ -2,6 +2,8 @@
 
 This Ansible playbook automates the installation and configuration of AWX using k3s on a target host. The playbook is designed to be configurable and reusable, leveraging variables and conditions to ensure flexibility.
 
+built and tested on almalinux 9 machines.
+
 ## Prerequisites
 
 The playlist will check for these that it can but honestly how can you run it without these?
@@ -25,13 +27,11 @@ awx_hostV: "awx.yourdomain.com" # FQDN of your awx host that the self-signed cer
 dns_serverV: "8.8.8.8" # set your local dns that can resolve your computer names
 node_host4V: "192.168.1.10 yourhostname" # awx host ipv4 address
 node_host6V: "fe80::1 yourhostname" # ipv6 host address if used - i haven't tested leaving blank yet
-domain_searchV: "domain.com" # domain name to append to dns search
 awx_postgres_passwordV: "your_postgres_password" # custom password for postres
 awx_admin_passwordV: "your_admin_password" # set your admin password for the web login
 timeout_valueV: 600  # 10 minutes in seconds
-delay_per_retryV: 20 # 20 seconds between retry
-repo_my_git_userV: "yourusername" # your git username assuming you make your own fork
-repo_upstream_userV: "kurokobo" # The person that deserves the credit, I just built the playlist.
+delay_per_retryV: 20 # 20 seconds between retry it will divide the timout value by this.
+repo_my_git_userV: "davidmacdonald80" # change if you fork it
 ```
 
 ## Notes
@@ -55,7 +55,6 @@ Run the playbook with ```ansible-playlist -i inventory.yaml install-k3s-operator
 - Copy k3s.yaml to ~/.kube/config
 - add kubectl bash completion to /etc/bashrc
 - add export KUBECONFIG to /etc/bashrc and activate changes
-- verify github repo is up to date with upstream
 - get latest AWX-Operator version and set in kustomization (takes several tasks)
 - Apply latest AWX-Operator and wait for it to be ready {{ vault_timeout_value }}
 - create cert for awx
