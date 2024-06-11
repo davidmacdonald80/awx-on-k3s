@@ -403,14 +403,6 @@
         kustomization_version: "{{ script_output.stdout_lines | select('search', '^ref_version=') | list | first | regex_replace('^ref_version=', '') }}"
         kustomization_image_tag: "{{ script_output.stdout_lines | select('search', '^new_tag=') | list | first | regex_replace('^new_tag=', '') }}"
       become: false
-    - name: Ensure the local repository is updated with the latest changes from upstream
-      shell: |
-        git remote add upstream https://github.com/{{ repo_upstream_user }}/awx-on-k3s.git || true
-      args:
-        chdir: "{{ home_dir }}/awx-on-k3s"
-        executable: /bin/bash
-      become: false
-    
     - name: Create kustomization.yaml for AWX operator
       copy:
         dest: "{{ home_dir }}/awx-on-k3s/operator/kustomization.yaml"
@@ -467,30 +459,6 @@
       args:
         creates: "{{ home_dir }}/awx-on-k3s/base/tls.crt"
       become: false
-
-    - name: Create ConfigMap for custom resolv.conf
-      copy:
-        dest: "{{ home_dir }}/awx-on-k3s/base/custom-resolv-conf.yaml"
-        content: |
-          apiVersion: v1
-          kind: ConfigMap
-          metadata:
-            name: custom-resolv-conf
-            namespace: awx
-          data:
-            resolv.conf: |
-              search {{ domain_search }}
-      become: false
-
-    - name: Apply configmap for custom resolv.conf
-      shell: kubectl apply -f "{{ home_dir }}/awx-on-k3s/base/custom-resolv-conf.yaml"
-      register: custom_resolv_conf_apply_result
-      become: false
-
-    - name: Debug custom resolv.conf apply result
-      debug:
-        var: custom_resolv_conf_apply_result
-
     - name: Create AWX Custom Resource (CR)
       copy:
         dest: "{{ home_dir }}/awx-on-k3s/base/awx.yaml"
@@ -604,6 +572,7 @@
     - name: Debug apply base
       debug:
         msg: deploy_awx_result
+      become: false
     - name: Wait for AWX task deployment to be ready, could take 5+ minutes. This only monitors for 10 min.
       shell: "kubectl get deployment awx-task -n awx -o jsonpath='{.status.readyReplicas}'"
       register: awx_task_deployment_status
