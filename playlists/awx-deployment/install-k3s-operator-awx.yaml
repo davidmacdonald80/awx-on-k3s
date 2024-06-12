@@ -10,6 +10,7 @@
         # Extracting and setting basic variables from the vault
         AWX_HOST: "{{ awx_hostV }}" # fqdn of host aka (URL for AWX)
         dns_server: "{{ dns_serverV }}" # local dns you want kubernetes to forward to
+        domain_search: "{{ domain_searchV }}"
         node_host4: "{{ node_host4V }}" # IPv4 and hostname
         node_host6: "{{ node_host6V }}" # IPv6 and hostname
         repo_my_git_user: "{{ repo_my_git_userV }}" # adjustable if you make your own fork
@@ -145,6 +146,56 @@
         return_content: yes
       register: latest_release
       become: false
+
+    - name: Make temp resolv.conf for k3s install
+      copy:
+        dest: "/etc/rancher/k3s/resolv.conf"
+        content: "nameserver {{ dns_server }}"
+
+    - name: Make override folder for rancher
+      file:
+        path: /var/lib/rancher/k3s/server/manifests/
+        state: directory
+        mode: '0755'
+
+    - name: make coredns.override.yaml
+      copy:
+        dest: /var/lib/rancher/k3s/server/manifests/coredns.override.yaml
+        content: |
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: coredns
+            namespace: kube-system
+          data:
+            Corefile: |
+              .:53 {
+                  errors
+                  health
+                  ready
+                  kubernetes cluster.local in-addr.arpa ip6.arpa {
+                    pods insecure
+                    fallthrough in-addr.arpa ip6.arpa
+                  }
+                  hosts /etc/coredns/NodeHosts {
+                    ttl 60
+                    reload 15s
+                    fallthrough
+                  }
+                  prometheus :9153
+                  rewrite name suffix cluster.local anti.net
+                  forward . {{ dns_server }}
+                  forward . /etc/resolv.conf
+                  log
+                  cache 60
+                  loop
+                  reload
+                  loadbalance
+              }
+
+
+
+
     - name: Set k3s version variable
       set_fact:
         k3s_version: "{{ latest_release.json.tag_name }}"
@@ -155,7 +206,7 @@
       register: rancher_k3s
       become: false
     - name: Install k3s
-      shell: curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION={{ k3s_version }} sh -s - --write-kubeconfig-mode 644
+      shell: curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION={{ k3s_version }} sh -s - --write-kubeconfig-mode 644 --resolv-conf=/etc/rancher/k3s/resolv.conf
       args:
         executable: /bin/bash
       when: not rancher_k3s.stat.exists
@@ -201,116 +252,8 @@
         create: yes
     - name: Source /etc/bashrc to apply changes
       shell: "source /etc/bashrc"
-    - name: Create ConfigMap patch for CoreDNS
-      copy:
-        dest: "{{ home_dir }}/coredns-configmap-patch.yaml"
-        content: |
-          apiVersion: v1
-          kind: ConfigMap
-          metadata:
-            name: coredns
-            namespace: kube-system
-          data:
-            Corefile: |
-              .:53 {
-                  errors
-                  health
-                  ready
-                  kubernetes cluster.local in-addr.arpa ip6.arpa {
-                    pods insecure
-                    fallthrough in-addr.arpa ip6.arpa
-                  }
-                  hosts /etc/coredns/NodeHosts {
-                    ttl 60
-                    reload 15s
-                    fallthrough
-                  }
-                  prometheus :9153
-                  forward . {{ dns_server }}
-                  forward . /etc/resolv.conf
-                  cache 30
-                  loop
-                  reload
-                  loadbalance
-                  import /etc/coredns/custom/*.override
-              }
-              import /etc/coredns/custom/*.server
-            NodeHosts: |
-              {{ node_host4 }}
-              {{ node_host6 }}
-      become: false
-    - name: Apply CoreDNS ConfigMap patch
-      shell: "kubectl apply -f {{ home_dir }}/coredns-configmap-patch.yaml"
-      register: kubectl_apply_result
-      become: false
 
-    - name: Rollout restart coredns
-      shell: kubectl -n kube-system rollout restart deployment coredns
-      become: false
-    - name: Check if CoreDNS ConfigMap patch is already applied
-      shell: kubectl -n kube-system get configmap coredns -o jsonpath='{.data.Corefile}' | grep '{{ dns_server }}'
-      register: check_patch_applied
-      ignore_errors: yes
-      retries: "{{ adjusted_timeout }}"
-      delay: "{{ delay_per_retry }}"
-      until: check_patch_applied.rc == 0
-      become: false
-    - name: Check if CoreDNS ConfigMap patch was applied successfully
-      fail:
-        msg: "Failed to apply CoreDNS ConfigMap patch"
-      when: kubectl_apply_result.rc is defined and kubectl_apply_result.rc != 0 and check_patch_applied.rc != 0
-      become: false
-    - name: Create Job definition to apply CoreDNS ConfigMap patch
-      copy:
-        dest: "{{ home_dir }}/update-coredns-config-job.yaml"
-        content: |
-          apiVersion: batch/v1
-          kind: Job
-          metadata:
-            name: update-coredns-config
-            namespace: kube-system
-          spec:
-            template:
-              spec:
-                containers:
-                - name: update-coredns-config
-                  image: bitnami/kubectl:latest
-                  command: ['sh', '-c', 'kubectl apply -f /config/coredns-configmap-patch.yaml']
-                  volumeMounts:
-                  - name: config-volume
-                    mountPath: /config
-                restartPolicy: OnFailure
-                volumes:
-                - name: config-volume
-                  configMap:
-                    name: coredns-configmap-patch
-      become: false
-    - name: Create Job to apply CoreDNS ConfigMap patch
-      shell: kubectl apply -f "{{ home_dir }}/update-coredns-config-job.yaml"
-      register: job_apply_result
-      when: check_patch_applied.rc != 0
-      retries: "{{ adjusted_timeout }}"
-      delay: "{{ delay_per_retry }}"
-      until: job_apply_result.rc == 0
-      become: false
-    - name: Check if Job was created successfully
-      fail:
-        msg: "Failed to create Job to apply CoreDNS ConfigMap patch"
-      when: job_apply_result.rc is defined and job_apply_result.rc != 0 and check_patch_applied.rc != 0
-      become: false
-    - name: Wait for Job to complete
-      shell: kubectl -n kube-system wait --for=condition=complete --timeout={{ timeout_value }}s job/update-coredns-config
-      register: job_wait_result
-      when: check_patch_applied.rc != 0
-      retries: "{{ adjusted_timeout }}"
-      delay: "{{ delay_per_retry }}"
-      until: job_wait_result.rc == 0
-      become: false
-    - name: Check Job result
-      fail:
-        msg: "Job to update CoreDNS config failed"
-      when: job_wait_result.rc is defined and job_wait_result.rc != 0 and check_patch_applied.rc != 0
-      become: false
+
     - name: make sure awx-on-k3s is absent
       file:
         path: "{{ home_dir }}/awx-on-k3s"
