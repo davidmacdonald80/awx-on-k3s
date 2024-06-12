@@ -145,10 +145,18 @@
       register: latest_release
       become: false
 
+    - name: Make directory
+      file:
+        path: /etc/rancher/k3s/
+        state: directory
+        mode: "0755"
+
     - name: Make temp resolv.conf for k3s install
       copy:
         dest: "/etc/rancher/k3s/resolv.conf"
-        content: "nameserver {{ dns_server }}"
+        content: |
+          rewrite name suffix cluster.local anti.net
+          nameserver {{ dns_server }}
 
     - name: Make override folder for rancher
       file:
@@ -181,7 +189,6 @@
                     fallthrough
                   }
                   prometheus :9153
-                  rewrite name suffix cluster.local anti.net
                   forward . {{ dns_server }}
                   forward . /etc/resolv.conf
                   log

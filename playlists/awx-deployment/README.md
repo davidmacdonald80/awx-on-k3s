@@ -24,6 +24,7 @@ You can edit it with ```ansible-vault edit vault.yml```
 become_passwordV: "your_sudo_password"
 awx_host_referenceV: "awx"
 awx_hostV: "awx.yourdomain.com" # FQDN of your awx host that the self-signed cert will use
+domain_searchV: "yourdomain.com"
 dns_serverV: "8.8.8.8" # set your local dns that can resolve your computer names
 awx_postgres_passwordV: "your_postgres_password" # custom password for postres
 awx_admin_passwordV: "your_admin_password" # set your admin password for the web login
