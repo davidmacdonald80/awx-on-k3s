@@ -17,6 +17,7 @@
         timeout_value: "{{ timeout_valueV }}" # default set to 20 minutes. adjust as needed
         delay_per_retry: "{{ delay_per_retryV }}" # x30 / 60 for timeout value in minutes
         home_dir: "/home/{{ ansible_user }}" # don't need to adjust
+        base_data: "/data/"
         volume_project: "/data/projects/" # folder for manual storage on host within awx for projects
         volume_postgres: "/data/postgres-15" # persistant folder for DB
       become: false
@@ -144,63 +145,6 @@
         return_content: yes
       register: latest_release
       become: false
-
-    - name: Make directory
-      file:
-        path: /etc/rancher/k3s/
-        state: directory
-        mode: "0755"
-
-    - name: Make temp resolv.conf for k3s install
-      copy:
-        dest: "/etc/rancher/k3s/resolv.conf"
-        content: |
-          rewrite name suffix cluster.local anti.net
-          nameserver {{ dns_server }}
-
-    - name: Make override folder for rancher
-      file:
-        path: /var/lib/rancher/k3s/server/manifests/
-        state: directory
-        mode: '0755'
-
-    - name: make coredns.override.yaml
-      copy:
-        dest: /var/lib/rancher/k3s/server/manifests/coredns.override.yaml
-        content: |
-          apiVersion: v1
-          kind: ConfigMap
-          metadata:
-            name: coredns
-            namespace: kube-system
-          data:
-            Corefile: |
-              .:53 {
-                  errors
-                  health
-                  ready
-                  kubernetes cluster.local in-addr.arpa ip6.arpa {
-                    pods insecure
-                    fallthrough in-addr.arpa ip6.arpa
-                  }
-                  hosts /etc/coredns/NodeHosts {
-                    ttl 60
-                    reload 15s
-                    fallthrough
-                  }
-                  prometheus :9153
-                  forward . {{ dns_server }}
-                  forward . /etc/resolv.conf
-                  log
-                  cache 60
-                  loop
-                  reload
-                  loadbalance
-              }
-
-
-
-
     - name: Set k3s version variable
       set_fact:
         k3s_version: "{{ latest_release.json.tag_name }}"
@@ -211,7 +155,7 @@
       register: rancher_k3s
       become: false
     - name: Install k3s
-      shell: curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION={{ k3s_version }} sh -s - --write-kubeconfig-mode 644 --resolv-conf=/etc/rancher/k3s/resolv.conf
+      shell: curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION={{ k3s_version }} sh -s - --write-kubeconfig-mode 644 --resolv-conf=/etc/resolv.conf
       args:
         executable: /bin/bash
       when: not rancher_k3s.stat.exists
@@ -221,13 +165,11 @@
         state: directory
         mode: '0755'
       become: false
-
     - name: Create a symbolic link
       file:
         src: /etc/rancher/k3s/k3s.yaml
         dest: "{{ home_dir }}/.kube/config"
         state: link
-
     - name: Ensure kubectl completion bash is added to /etc/bashrc
       lineinfile:
         path: /etc/bashrc
@@ -242,8 +184,6 @@
         create: yes
     - name: Source /etc/bashrc to apply changes
       shell: "source /etc/bashrc"
-
-
     - name: make sure awx-on-k3s is absent
       file:
         path: "{{ home_dir }}/awx-on-k3s"
@@ -493,6 +433,7 @@
         - { path: "{{ volume_project }}", uid: "1000", gid: "0", mode: "0755" }
         - { path: "{{ volume_postgres }}", uid: "0", gid: "0", mode: "0755" }
         - { path: "{{ volume_postgres }}/data", uid: "26", gid: "0", mode: "0700" }
+        - { path: "{{ base_data }}/tower", uid: "1000", gid: "0", mode: "0755" }
     - name: Deploy AWX
       shell: kubectl apply -k "{{ home_dir }}/awx-on-k3s/base/"
       register: deploy_awx_result
