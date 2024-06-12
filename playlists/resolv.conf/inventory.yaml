@@ -1,7 +1,0 @@
----
-all:
-  hosts:
-    awx: # host name
-      ansible_host: awx # host name or IP
-      ansible_user: david
-      ansible_connection: ssh
