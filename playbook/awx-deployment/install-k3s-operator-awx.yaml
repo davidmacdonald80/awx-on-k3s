@@ -139,6 +139,13 @@
         state: stopped
         enabled: no
       when: nm_cloud_setup_timer.stat.exists
+    - name: Ensure NetworkManager is not using dnsmasq for resolv.conf
+      lineinfile:
+        path: /etc/NetworkManager/conf.d/crc-nm-dnsmasq.conf
+        regexp: '^dns='
+        line: "dns={{ dns_server }}"
+        state: present
+      notify: Restart NetworkManager
     - name: Fetch latest k3s release from Github
       uri:
         url: https://api.github.com/repos/k3s-io/k3s/releases/latest
@@ -371,6 +378,13 @@
             redis_resource_requirements: {}
             rsyslog_resource_requirements: {}
 
+              extra_volumes: |
+                - name: awx-web-debug
+                  emptyDir: {}
+              web_extra_volume_mounts: |
+                - name: awx-web-debug
+                  mountPath: "/var/log/tower"
+
             # Uncomment to reveal "censored" logs
             # no_log: false
       become: false
@@ -461,3 +475,7 @@
       service:
         name: firewalld
         state: reloaded
+    - name: Restart NetworkManager
+      service:
+        name: NetworkManager
+        state: restarted
