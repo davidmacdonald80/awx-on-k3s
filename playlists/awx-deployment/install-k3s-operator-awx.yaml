@@ -11,8 +11,6 @@
         AWX_HOST: "{{ awx_hostV }}" # fqdn of host aka (URL for AWX)
         dns_server: "{{ dns_serverV }}" # local dns you want kubernetes to forward to
         domain_search: "{{ domain_searchV }}"
-        node_host4: "{{ node_host4V }}" # IPv4 and hostname
-        node_host6: "{{ node_host6V }}" # IPv6 and hostname
         repo_my_git_user: "{{ repo_my_git_userV }}" # adjustable if you make your own fork
         awx_postgres_password: "{{ awx_postgres_passwordV }}" # change for security
         awx_admin_password: "{{ awx_admin_passwordV }}" # web admin password
@@ -216,28 +214,13 @@
         state: directory
         mode: '0755'
       become: false
-    - name: Get checksum of source k3s.yaml
-      stat:
-        path: /etc/rancher/k3s/k3s.yaml
-        get_checksum: yes
-      register: k3s_yaml_file
-    - name: Get checksum of dest config file
-      stat:
-        path: "{{ home_dir }}/.kube/config"
-        get_checksum: yes
-      register: config_dest_file
-      ignore_errors: true
-      become: false
-    - name: Copy k3s.yaml to .kube/config
-      copy:
+
+    - name: Create a symbolic link
+      file:
         src: /etc/rancher/k3s/k3s.yaml
         dest: "{{ home_dir }}/.kube/config"
-        owner: "{{ ansible_user }}"
-        group: "{{ ansible_user }}"
-        mode: '0644'
-        remote_src: true
-      when: k3s_yaml_file.stat.exists and 
-         (config_dest_file.stat.exists == false or k3s_yaml_file.stat.checksum != config_dest_file.stat.checksum)
+        state: link
+
     - name: Ensure kubectl completion bash is added to /etc/bashrc
       lineinfile:
         path: /etc/bashrc
