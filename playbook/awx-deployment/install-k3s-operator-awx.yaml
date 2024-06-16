@@ -409,7 +409,6 @@
 
  
 
-
     - name: Create TLS Secret for Web portal
       shell: "openssl req -x509 -nodes -days 36500 -newkey rsa:4096 -out {{ home_dir }}/awx-on-k3s/base/tls.crt -keyout {{ home_dir }}/awx-on-k3s/base/tls.key -subj '/CN={{ AWX_HOST }}/O={{ AWX_HOST }}' -addext 'subjectAltName = DNS:{{ AWX_HOST }}'"
       args:
@@ -426,7 +425,7 @@
             name: awx
             namespace: awx
           spec:
-            image: docker.io/davidm80/awx-with-receptor:latest
+            image: 
             admin_user: admin
             admin_password_secret: awx-admin-password
 
