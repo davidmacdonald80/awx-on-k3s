@@ -362,15 +362,15 @@
         commonname="{{ AWX_HOST }}"
         dnsname={{ AWX_HOST }}
         nodeid={{ AWX_HOST }}
-        outreq={{ home_dir }}/awx-on-k3s/base/certs/server.csr
+        outreq={{ home_dir }}/awx-on-k3s/base/certs/receptor.csr
         outkey={{ home_dir }}/awx-on-k3s/base/certs/receptor.key
       args:
-        creates: "{{ home_dir }}/awx-on-k3s/base/certs/server.csr"
+        creates: "{{ home_dir }}/awx-on-k3s/base/certs/receptor.csr"
       become: false
     - name: Sign CSR for AWX server for receptor
       command: >
         receptor --cert-signreq
-        req={{ home_dir }}/awx-on-k3s/base/certs/server.csr
+        req={{ home_dir }}/awx-on-k3s/base/certs/receptor.csr
         cacert={{ home_dir }}/awx-on-k3s/base/certs/mesh-CA.crt
         cakey={{ home_dir }}/awx-on-k3s/base/certs/mesh-CA.key
         outcert={{ home_dir }}/awx-on-k3s/base/certs/receptor.crt
@@ -585,6 +585,10 @@
       delay: "{{ delay_per_retry }}"
       until: awx_task_deployment_status.stdout == "1"
       become: false
+    - name: Remove Receptor
+      dnf:
+        name: "receptor"
+        state: "absent"
     - name: Check if a reboot is needed
       shell: "needs-restarting -r"
       register: reboot_needed2
