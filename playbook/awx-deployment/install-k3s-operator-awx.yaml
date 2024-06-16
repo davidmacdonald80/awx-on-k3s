@@ -43,7 +43,6 @@
         - { name: "libselinux", state: "present" }
         - { name: "podman", state: "absent" }
         - { name: "buildah", state: "absent" }
-        - { name: "*", state: "latest"}
     - name: Install required Ansible collections
       ansible.builtin.pip:
         name: ansible
@@ -75,11 +74,11 @@
             <port protocol="tcp" port="80"/>
             <port protocol="tcp" port="443"/>
             <port protocol="tcp" port="22"/>
-            <port protocol="tcp" port="2379"/>
             <port protocol="tcp" port="2380"/>
             <port protocol="tcp" port="10250"/>
             <port protocol="tcp" port="10251"/>
             <port protocol="tcp" port="10252"/>
+            <port protocol="tcp" port="27199">
             <port protocol="tcp" port="30000-32767"/>
           </service>
       notify: reload_firewalld
@@ -201,11 +200,6 @@
         git clone https://github.com/{{ repo_my_git_user }}/awx-on-k3s.git
       args:
         executable: /bin/bash
-      become: false
-    - name: Remove temporary directory if it exists
-      file:
-        path: "{{ home_dir }}/awx-on-k3s-tmp"
-        state: absent
       become: false
     - name: Fetch latest tag from fork
       uri:
@@ -332,7 +326,91 @@
         msg: "Failed to deploy AWX operator"
       when: kustomize_apply_result is defined and kustomize_apply_result.rc != 0
       become: false
-    - name: Create TLS Secret
+
+    - name: Ensure /etc/receptor and ca directories exist
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: receptor
+        group: receptor
+        mode: '0755'
+      with_items:
+        - /etc/receptor
+        - /etc/receptor/tls
+        - /etc/receptor/tls/ca
+
+    - name: Create certs directory for receptor
+      file:
+        path: "{{ home_dir }}/awx-on-k3s/base/certs"
+        state: directory
+        mode: '0755'
+      become: false
+    - name: Initialize CA certificate for receptor
+      command: >
+        receptor --cert-init commonname="Receptor CA"
+        bits=2048
+        outcert={{ home_dir }}/awx-on-k3s/base/certs/mesh-CA.crt
+        outkey={{ home_dir }}/awx-on-k3s/base/certs/mesh-CA.key
+      args:
+        creates: "{{ home_dir }}/awx-on-k3s/base/certs/mesh-CA.crt"
+      become: false
+    - name: Generate CSR for AWX server receptor
+      command: >
+        receptor --cert-makereq bits=2048
+        commonname="{{ AWX_HOST }}"
+        dnsname={{ AWX_HOST }}
+        nodeid={{ AWX_HOST }}
+        outreq={{ home_dir }}/awx-on-k3s/base/certs/server.csr
+        outkey={{ home_dir }}/awx-on-k3s/base/certs/receptor.key
+      args:
+        creates: "{{ home_dir }}/awx-on-k3s/base/certs/server.csr"
+      become: false
+    - name: Sign CSR for AWX server for receptor
+      command: >
+        receptor --cert-signreq
+        req={{ home_dir }}/awx-on-k3s/base/certs/server.csr
+        cacert={{ home_dir }}/awx-on-k3s/base/certs/mesh-CA.crt
+        cakey={{ home_dir }}/awx-on-k3s/base/certs/mesh-CA.key
+        outcert={{ home_dir }}/awx-on-k3s/base/certs/receptor.crt
+      args:
+        creates: "{{ home_dir }}/awx-on-k3s/base/certs/receptor.crt"
+      become: false
+    - name: Copy server certs to /etc/receptor/tls and ca
+      copy:
+        src: "{{ item.src }}"
+        dest: "{{ item.dest }}"
+        owner: receptor
+        group: receptor
+        mode: "{{ item.mode }}"
+      with_items:
+        - { src: "{{ home_dir }}/awx-on-k3s/base/certs/receptor.crt", dest: "/etc/receptor/tls/receptor.crt", mode: "0644" }
+        - { src: "{{ home_dir }}/awx-on-k3s/base/certs/receptor.key", dest: "/etc/receptor/tls/receptor.key", mode: "0600" }
+        - { src: "{{ home_dir }}/awx-on-k3s/base/certs/mesh-CA.crt", dest: "/etc/receptor/tls/ca/mesh-CA.crt", mode: "0644" }
+    - name: Create receptor.conf file
+      copy:
+        dest: "{{ home_dir }}/awx-on-k3s/base/receptor.conf"
+        content: |
+          ---
+          - node:
+              id: "{{ AWX_HOST }}"
+          - log-level: info
+          - tls-server:
+              name: tlsreceptor
+              cert: /etc/receptor/tls/receptor.crt
+              key: /etc/receptor/tls/receptor.key
+              clientcas: /etc/receptor/tls/ca/mesh-CA.crt
+          - work-command:
+              worktype: ansible-runner
+              command: ansible-runner
+          - tcp-listener:
+              port: 27199
+              tls: tlsreceptor
+      become: false
+
+ 
+
+
+    - name: Create TLS Secret for Web portal
       shell: "openssl req -x509 -nodes -days 36500 -newkey rsa:4096 -out {{ home_dir }}/awx-on-k3s/base/tls.crt -keyout {{ home_dir }}/awx-on-k3s/base/tls.key -subj '/CN={{ AWX_HOST }}/O={{ AWX_HOST }}' -addext 'subjectAltName = DNS:{{ AWX_HOST }}'"
       args:
         creates: "{{ home_dir }}/awx-on-k3s/base/tls.crt"
@@ -348,6 +426,7 @@
             name: awx
             namespace: awx
           spec:
+            image: docker.io/davidm80/awx-with-receptor:latest
             admin_user: admin
             admin_password_secret: awx-admin-password
 
@@ -378,12 +457,42 @@
             redis_resource_requirements: {}
             rsyslog_resource_requirements: {}
 
-              extra_volumes: |
-                - name: awx-web-debug
-                  emptyDir: {}
-              web_extra_volume_mounts: |
-                - name: awx-web-debug
-                  mountPath: "/var/log/tower"
+            extra_volumes: |
+              - name: awx-web-debug
+                emptyDir: {}
+              - name: awx-tls-receptor-certs
+                secret:
+                  secretName: receptor-tls-server
+              - name: awx-tls-receptor-mesh
+                secret:
+                  secretName: receptor-tls-mesh-ca
+              - name: receptor-config
+                configMap:
+                  name: receptor-config
+            web_extra_volume_mounts: |
+              - name: awx-web-debug
+                mountPath: "/var/log/tower"
+              - name: awx-tls-receptor-certs
+                mountPath: /etc/receptor/tls
+                readOnly: true
+              - name: awx-tls-receptor-mesh
+                mountPath: /etc/receptor/tls/ca
+                readOnly: true
+              - name: receptor-config
+                mountPath: /etc/receptor
+                subPath: receptor.conf
+                readOnly: true
+            task_extra_volume_mounts: |
+              - name: awx-tls-receptor-certs
+                mountPath: /etc/receptor/tls
+                readOnly: true
+              - name: awx-tls-receptor-mesh
+                mountPath: /etc/receptor/tls/ca
+                readOnly: true
+              - name: receptor-config
+                mountPath: /etc/receptor
+                subPath: receptor.conf
+                readOnly: true
 
             # Uncomment to reveal "censored" logs
             # no_log: false
@@ -406,6 +515,14 @@
               files:
                 - tls.crt
                 - tls.key
+            - name: receptor-tls-server
+              files:
+                - certs/receptor.crt
+                - certs/receptor.key
+            - name: receptor-tls-mesh-ca
+              files:
+                - certs/mesh-CA.crt
+                - certs/mesh-CA.key
 
             - name: awx-postgres-configuration
               type: Opaque
@@ -421,6 +538,11 @@
               type: Opaque
               literals:
                 - password={{ awx_admin_password }}
+
+          configMapGenerator:
+            - name: receptor-config
+              files:
+                - receptor.conf=receptor.conf
 
           resources:
             - pv.yaml
@@ -444,10 +566,10 @@
         group: "{{ item.gid }}"
         mode: "{{ item.mode }}"
       loop:
-        - { path: "{{ volume_project }}", uid: "1000", gid: "0", mode: "0755" }
-        - { path: "{{ volume_postgres }}", uid: "0", gid: "0", mode: "0755" }
+        - { path: "{{ volume_project }}", uid: "1000", gid: "0", mode: "0775" }
+        - { path: "{{ volume_postgres }}", uid: "0", gid: "0", mode: "0775" }
         - { path: "{{ volume_postgres }}/data", uid: "26", gid: "0", mode: "0700" }
-        - { path: "{{ base_data }}/tower", uid: "1000", gid: "0", mode: "0755" }
+        - { path: "{{ base_data }}tower", uid: "1000", gid: "0", mode: "0775" }
     - name: Deploy AWX
       shell: kubectl apply -k "{{ home_dir }}/awx-on-k3s/base/"
       register: deploy_awx_result
