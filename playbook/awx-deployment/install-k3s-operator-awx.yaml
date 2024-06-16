@@ -35,12 +35,14 @@
         name: "{{ item.name }}"
         state: "{{ item.state }}"
       loop:
+        - { name: "epel-release", state: "present"}
         - { name: "git", state: "present" }
         - { name: "curl", state: "present" }
         - { name: "python3-pip", state: "present" }
         - { name: "yum-utils", state: "present" }
         - { name: "firewalld", state: "present" }
         - { name: "libselinux", state: "present" }
+        - { name: "receptor", state: "present"}
         - { name: "podman", state: "absent" }
         - { name: "buildah", state: "absent" }
     - name: Install required Ansible collections
