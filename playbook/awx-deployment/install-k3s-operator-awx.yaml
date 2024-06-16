@@ -327,17 +327,17 @@
       when: kustomize_apply_result is defined and kustomize_apply_result.rc != 0
       become: false
 
-    - name: Ensure /etc/receptor and ca directories exist
-      file:
-        path: "{{ item }}"
-        state: directory
-        owner: receptor
-        group: receptor
-        mode: '0755'
-      with_items:
-        - /etc/receptor
-        - /etc/receptor/tls
-        - /etc/receptor/tls/ca
+    # - name: Ensure /etc/receptor and ca directories exist
+    #   file:
+    #     path: "{{ item }}"
+    #     state: directory
+    #     owner: receptor
+    #     group: receptor
+    #     mode: '0755'
+    #   with_items:
+    #     - /etc/receptor
+    #     - /etc/receptor/tls
+    #     - /etc/receptor/tls/ca
 
     - name: Create certs directory for receptor
       file:
@@ -375,17 +375,17 @@
       args:
         creates: "{{ home_dir }}/awx-on-k3s/base/certs/receptor.crt"
       become: false
-    - name: Copy server certs to /etc/receptor/tls and ca
-      copy:
-        src: "{{ item.src }}"
-        dest: "{{ item.dest }}"
-        owner: receptor
-        group: receptor
-        mode: "{{ item.mode }}"
-      with_items:
-        - { src: "{{ home_dir }}/awx-on-k3s/base/certs/receptor.crt", dest: "/etc/receptor/tls/receptor.crt", mode: "0644" }
-        - { src: "{{ home_dir }}/awx-on-k3s/base/certs/receptor.key", dest: "/etc/receptor/tls/receptor.key", mode: "0600" }
-        - { src: "{{ home_dir }}/awx-on-k3s/base/certs/mesh-CA.crt", dest: "/etc/receptor/tls/ca/mesh-CA.crt", mode: "0644" }
+    # - name: Copy server certs to /etc/receptor/tls and ca
+    #   copy:
+    #     src: "{{ item.src }}"
+    #     dest: "{{ item.dest }}"
+    #     owner: receptor
+    #     group: receptor
+    #     mode: "{{ item.mode }}"
+    #   with_items:
+    #     - { src: "{{ home_dir }}/awx-on-k3s/base/certs/receptor.crt", dest: "/etc/receptor/tls/receptor.crt", mode: "0644" }
+    #     - { src: "{{ home_dir }}/awx-on-k3s/base/certs/receptor.key", dest: "/etc/receptor/tls/receptor.key", mode: "0600" }
+    #     - { src: "{{ home_dir }}/awx-on-k3s/base/certs/mesh-CA.crt", dest: "/etc/receptor/tls/ca/mesh-CA.crt", mode: "0644" }
     - name: Create receptor.conf file
       copy:
         dest: "{{ home_dir }}/awx-on-k3s/base/receptor.conf"
@@ -425,7 +425,7 @@
             name: awx
             namespace: awx
           spec:
-            image: 
+            image: docker.io/davidm80/awx-with-receptor:latest
             admin_user: admin
             admin_password_secret: awx-admin-password
 
