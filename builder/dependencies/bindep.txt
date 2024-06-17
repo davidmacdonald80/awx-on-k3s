@@ -1,6 +1,8 @@
+epel-release
 openssh-clients
 sshpass
 
 git-core
 findutils
 which
+receptor

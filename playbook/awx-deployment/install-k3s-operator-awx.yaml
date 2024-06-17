@@ -382,8 +382,6 @@
               tls: tlsreceptor
       become: false
 
- 
-
     - name: Create TLS Secret for Web portal
       shell: "openssl req -x509 -nodes -days 36500 -newkey rsa:4096 -out {{ home_dir }}/awx-on-k3s/base/tls.crt -keyout {{ home_dir }}/awx-on-k3s/base/tls.key -subj '/CN={{ AWX_HOST }}/O={{ AWX_HOST }}' -addext 'subjectAltName = DNS:{{ AWX_HOST }}'"
       args:
@@ -400,7 +398,6 @@
             name: awx
             namespace: awx
           spec:
-            image: docker.io/davidm80/awx-with-receptor:latest
             admin_user: admin
             admin_password_secret: awx-admin-password
 
@@ -558,10 +555,6 @@
       delay: "{{ delay_per_retry }}"
       until: awx_task_deployment_status.stdout == "1"
       become: false
-    - name: Remove Receptor
-      dnf:
-        name: "receptor"
-        state: "absent"
     - name: Check if a reboot is needed
       shell: "needs-restarting -r"
       register: reboot_needed2
@@ -575,7 +568,4 @@
       service:
         name: firewalld
         state: reloaded
-    - name: Restart NetworkManager
-      service:
-        name: NetworkManager
-        state: restarted
+
