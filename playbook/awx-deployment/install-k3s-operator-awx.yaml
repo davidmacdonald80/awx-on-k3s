@@ -324,64 +324,6 @@
       when: kustomize_apply_result is defined and kustomize_apply_result.rc != 0
       become: false
 
-    - name: Create certs directory for receptor
-      file:
-        path: "{{ home_dir }}/awx-on-k3s/base/certs"
-        state: directory
-        mode: '0755'
-      become: false
-
-    - name: Initialize CA certificate for receptor
-      command: >
-        receptor --cert-init commonname="Receptor CA"
-        bits=2048
-        outcert={{ home_dir }}/awx-on-k3s/base/certs/mesh-CA.crt
-        outkey={{ home_dir }}/awx-on-k3s/base/certs/mesh-CA.key
-      args:
-        creates: "{{ home_dir }}/awx-on-k3s/base/certs/mesh-CA.crt"
-      become: false
-    - name: Generate CSR for AWX server receptor
-      command: >
-        receptor --cert-makereq bits=2048
-        commonname="{{ AWX_HOST }}"
-        dnsname={{ AWX_HOST }}
-        nodeid={{ AWX_HOST }}
-        outreq={{ home_dir }}/awx-on-k3s/base/certs/receptor.csr
-        outkey={{ home_dir }}/awx-on-k3s/base/certs/receptor.key
-      args:
-        creates: "{{ home_dir }}/awx-on-k3s/base/certs/receptor.csr"
-      become: false
-    - name: Sign CSR for AWX server for receptor
-      shell: |
-        yes | receptor --cert-signreq \
-        req={{ home_dir }}/awx-on-k3s/base/certs/receptor.csr \
-        cacert={{ home_dir }}/awx-on-k3s/base/certs/mesh-CA.crt \
-        cakey={{ home_dir }}/awx-on-k3s/base/certs/mesh-CA.key \
-        outcert={{ home_dir }}/awx-on-k3s/base/certs/receptor.crt
-      args:
-        creates: "{{ home_dir }}/awx-on-k3s/base/certs/receptor.crt"
-      become: false
-    - name: Create receptor.conf file
-      copy:
-        dest: "{{ home_dir }}/awx-on-k3s/base/receptor.conf"
-        content: |
-          ---
-          - node:
-              id: "{{ AWX_HOST }}"
-          - log-level: info
-          - tls-server:
-              name: tlsreceptor
-              cert: /etc/receptor/tls/receptor.crt
-              key: /etc/receptor/tls/receptor.key
-              clientcas: /etc/receptor/tls/ca/mesh-CA.crt
-          - work-command:
-              worktype: ansible-runner
-              command: ansible-runner
-          - tcp-listener:
-              port: 27199
-              tls: tlsreceptor
-      become: false
-
     - name: Create TLS Secret for Web portal
       shell: "openssl req -x509 -nodes -days 36500 -newkey rsa:4096 -out {{ home_dir }}/awx-on-k3s/base/tls.crt -keyout {{ home_dir }}/awx-on-k3s/base/tls.key -subj '/CN={{ AWX_HOST }}/O={{ AWX_HOST }}' -addext 'subjectAltName = DNS:{{ AWX_HOST }}'"
       args:
@@ -431,39 +373,9 @@
             extra_volumes: |
               - name: awx-web-debug
                 emptyDir: {}
-              - name: awx-tls-receptor-certs
-                secret:
-                  secretName: receptor-tls-server
-              - name: awx-tls-receptor-mesh
-                secret:
-                  secretName: receptor-tls-mesh-ca
-              - name: receptor-config
-                configMap:
-                  name: receptor-config
             web_extra_volume_mounts: |
               - name: awx-web-debug
                 mountPath: "/var/log/tower"
-              - name: awx-tls-receptor-certs
-                mountPath: /etc/receptor/tls
-                readOnly: true
-              - name: awx-tls-receptor-mesh
-                mountPath: /etc/receptor/tls/ca
-                readOnly: true
-              - name: receptor-config
-                mountPath: /etc/receptor
-                subPath: receptor.conf
-                readOnly: true
-            task_extra_volume_mounts: |
-              - name: awx-tls-receptor-certs
-                mountPath: /etc/receptor/tls
-                readOnly: true
-              - name: awx-tls-receptor-mesh
-                mountPath: /etc/receptor/tls/ca
-                readOnly: true
-              - name: receptor-config
-                mountPath: /etc/receptor
-                subPath: receptor.conf
-                readOnly: true
 
             # Uncomment to reveal "censored" logs
             # no_log: false
@@ -486,14 +398,6 @@
               files:
                 - tls.crt
                 - tls.key
-            - name: receptor-tls-server
-              files:
-                - certs/receptor.crt
-                - certs/receptor.key
-            - name: receptor-tls-mesh-ca
-              files:
-                - certs/mesh-CA.crt
-                - certs/mesh-CA.key
 
             - name: awx-postgres-configuration
               type: Opaque
@@ -509,11 +413,6 @@
               type: Opaque
               literals:
                 - password={{ awx_admin_password }}
-
-          configMapGenerator:
-            - name: receptor-config
-              files:
-                - receptor.conf=receptor.conf
 
           resources:
             - pv.yaml
