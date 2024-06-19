@@ -287,7 +287,7 @@
           secretGenerator:
             - name: redhat-operators-pull-secret
               literals:
-                - operator=awx
+                - operator=awx.{{ domain_search }}
 
           resources:
             - github.com/ansible/awx-operator/config/default?ref={{ latest_version.strip() }}
